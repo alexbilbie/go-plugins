@@ -8,6 +8,7 @@ import (
 
 type tableNameKey struct{}
 
+// TableName sets the DynamoDB table name as a registry option
 func TableName(tableName string) registry.Option {
 	return func(o *registry.Options) {
 		if o.Context == nil {
