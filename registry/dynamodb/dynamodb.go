@@ -2,8 +2,8 @@ package dynamodb
 
 import (
 	"context"
-	"fmt"
 	"time"
+	"fmt"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -28,8 +28,8 @@ func init() {
 }
 
 type dynamoDBRegistry struct {
-	client  dynamodbiface.DynamoDBAPI
-	options registry.Options
+	dynamodbClient dynamodbiface.DynamoDBAPI
+	options        registry.Options
 }
 
 func (r dynamoDBRegistry) Register(service *registry.Service, opts ...registry.RegisterOption) error {
@@ -61,9 +61,6 @@ func (r dynamoDBRegistry) Register(service *registry.Service, opts ...registry.R
 		items = append(items, av)
 	}
 
-	//fmt.Printf("%+v\n", items)
-	//os.Exit(1)
-
 	var writeRequests []*dynamodb.WriteRequest
 	for _, item := range items {
 		writeRequests = append(writeRequests, &dynamodb.WriteRequest{
@@ -73,14 +70,14 @@ func (r dynamoDBRegistry) Register(service *registry.Service, opts ...registry.R
 		})
 	}
 
-	result, err := r.client.BatchWriteItem(&dynamodb.BatchWriteItemInput{
+	result, err := r.dynamodbClient.BatchWriteItem(&dynamodb.BatchWriteItemInput{
 		RequestItems: map[string][]*dynamodb.WriteRequest{
 			r.getTableName(): writeRequests,
 		},
 	})
 
 	if err != nil {
-		return err
+		return errors.Wrap(err, "DynamoDB registry failed to register service")
 	}
 
 	if len(result.UnprocessedItems) > 0 {
@@ -96,7 +93,7 @@ func (r dynamoDBRegistry) Deregister(service *registry.Service) error {
 		return errors.New("Require at least one node to deregister")
 	}
 
-	_, err := r.client.DeleteItem(&dynamodb.DeleteItemInput{
+	_, err := r.dynamodbClient.DeleteItem(&dynamodb.DeleteItemInput{
 		TableName: aws.String(r.getTableName()),
 		Key: map[string]*dynamodb.AttributeValue{
 			keyType: {S: aws.String(typeNode)},
@@ -109,7 +106,6 @@ func (r dynamoDBRegistry) Deregister(service *registry.Service) error {
 
 	srv, err := r.GetService(service.Name)
 	if err != nil {
-		panic(err)
 		return err
 	}
 
@@ -118,7 +114,7 @@ func (r dynamoDBRegistry) Deregister(service *registry.Service) error {
 	}
 
 	if len(srv[0].Nodes) == 0 {
-		_, err = r.client.DeleteItem(&dynamodb.DeleteItemInput{
+		_, err = r.dynamodbClient.DeleteItem(&dynamodb.DeleteItemInput{
 			TableName: aws.String(r.getTableName()),
 			Key: map[string]*dynamodb.AttributeValue{
 				keyType: {S: aws.String(typeSrv)},
@@ -126,7 +122,6 @@ func (r dynamoDBRegistry) Deregister(service *registry.Service) error {
 			},
 		})
 		if err != nil {
-			panic(errors.Wrap(err, "DynamoDB registry deregister service error"))
 			return errors.Wrap(err, "DynamoDB registry deregister service error")
 		}
 	}
@@ -135,9 +130,7 @@ func (r dynamoDBRegistry) Deregister(service *registry.Service) error {
 }
 
 func (r dynamoDBRegistry) GetService(serviceName string) ([]*registry.Service, error) {
-	fmt.Printf("Finding service called %s\n", serviceName)
-
-	getItemResult, err := r.client.GetItem(&dynamodb.GetItemInput{
+	getItemResult, err := r.dynamodbClient.GetItem(&dynamodb.GetItemInput{
 		TableName: aws.String(r.getTableName()),
 		Key: map[string]*dynamodb.AttributeValue{
 			keyType: {S: aws.String(typeSrv)},
@@ -146,12 +139,10 @@ func (r dynamoDBRegistry) GetService(serviceName string) ([]*registry.Service, e
 	})
 
 	if err != nil {
-		panic(err)
-		return nil, err
+		return nil, errors.Wrap(err, "DynamoDB registry failed to get service")
 	}
 
 	if len(getItemResult.Item) == 0 {
-		fmt.Println("not found")
 		return nil, registry.ErrNotFound
 	}
 
@@ -160,7 +151,7 @@ func (r dynamoDBRegistry) GetService(serviceName string) ([]*registry.Service, e
 		return nil, errors.Wrap(err, "DynamoDB registry GetService DynamoDB unmarshal error of service")
 	}
 
-	queryResult, err := r.client.Query(&dynamodb.QueryInput{
+	queryResult, err := r.dynamodbClient.Query(&dynamodb.QueryInput{
 		TableName:      aws.String(r.getTableName()),
 		ConsistentRead: aws.Bool(true),
 		KeyConditions: map[string]*dynamodb.Condition{
@@ -210,7 +201,7 @@ func (r dynamoDBRegistry) GetService(serviceName string) ([]*registry.Service, e
 
 func (r dynamoDBRegistry) ListServices() ([]*registry.Service, error) {
 
-	queryResult, err := r.client.Query(&dynamodb.QueryInput{
+	queryResult, err := r.dynamodbClient.Query(&dynamodb.QueryInput{
 		TableName:      aws.String(r.getTableName()),
 		ConsistentRead: aws.Bool(true),
 		KeyConditions: map[string]*dynamodb.Condition{
@@ -246,7 +237,7 @@ func (r dynamoDBRegistry) ListServices() ([]*registry.Service, error) {
 }
 
 func (r dynamoDBRegistry) Watch() (registry.Watcher, error) {
-	panic("implement me")
+	return nil, errors.New("DynamoDB registry has now Watcher implementation")
 }
 
 func (r dynamoDBRegistry) String() string {
@@ -280,8 +271,6 @@ func newClient() dynamodbiface.DynamoDBAPI {
 	s := session.Must(session.NewSessionWithOptions(session.Options{
 		SharedConfigState: session.SharedConfigEnable,
 	}))
-
-	//s.Config = s.Config.WithLogLevel(aws.LogDebugWithHTTPBody)
 
 	return dynamodb.New(s)
 }
