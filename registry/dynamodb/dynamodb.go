@@ -21,6 +21,7 @@ const (
 	typeSrv      = "service"
 	keyType      = "Type"
 	keyName      = "Name"
+	delimiter    = "###"
 )
 
 func init() {
@@ -130,35 +131,14 @@ func (r dynamoDBRegistry) Deregister(service *registry.Service) error {
 }
 
 func (r dynamoDBRegistry) GetService(serviceName string) ([]*registry.Service, error) {
-	getItemResult, err := r.dynamodbClient.GetItem(&dynamodb.GetItemInput{
-		TableName: aws.String(r.getTableName()),
-		Key: map[string]*dynamodb.AttributeValue{
-			keyType: {S: aws.String(typeSrv)},
-			keyName: {S: aws.String(serviceName)},
-		},
-	})
-
-	if err != nil {
-		return nil, errors.Wrap(err, "DynamoDB registry failed to get service")
-	}
-
-	if len(getItemResult.Item) == 0 {
-		return nil, registry.ErrNotFound
-	}
-
-	var ddbService DDBService
-	if dynamodbattribute.UnmarshalMap(getItemResult.Item, &ddbService) != nil {
-		return nil, errors.Wrap(err, "DynamoDB registry GetService DynamoDB unmarshal error of service")
-	}
-
-	queryResult, err := r.dynamodbClient.Query(&dynamodb.QueryInput{
+	getServiceQuery, getServiceQueryErr := r.dynamodbClient.Query(&dynamodb.QueryInput{
 		TableName:      aws.String(r.getTableName()),
 		ConsistentRead: aws.Bool(true),
 		KeyConditions: map[string]*dynamodb.Condition{
 			keyType: {
 				AttributeValueList: []*dynamodb.AttributeValue{
 					{
-						S: aws.String(typeNode),
+						S: aws.String(typeSrv),
 					},
 				},
 				ComparisonOperator: aws.String("EQ"),
@@ -166,7 +146,7 @@ func (r dynamoDBRegistry) GetService(serviceName string) ([]*registry.Service, e
 			keyName: {
 				AttributeValueList: []*dynamodb.AttributeValue{
 					{
-						S: aws.String(serviceName),
+						S: aws.String(fmt.Sprintf("%s%s", serviceName, delimiter)),
 					},
 				},
 				ComparisonOperator: aws.String("BEGINS_WITH"),
@@ -174,29 +154,70 @@ func (r dynamoDBRegistry) GetService(serviceName string) ([]*registry.Service, e
 		},
 	})
 
-	if err != nil {
-		return nil, errors.Wrap(err, "DynamoDB registry GetService error")
+	if getServiceQueryErr != nil {
+		return nil, errors.Wrap(getServiceQueryErr, "DynamoDB registry GetService query services error")
 	}
 
-	var ddbNodes []DDBNode
-	for _, item := range queryResult.Items {
-		var node DDBNode
-		if dynamodbattribute.UnmarshalMap(item, &node) != nil {
-			return nil, errors.Wrap(err, "DynamoDB registry GetService DynamoDB unmarshal node error")
-		}
-		ddbNodes = append(ddbNodes, node)
+	if len(getServiceQuery.Items) == 0 {
+		return nil, registry.ErrNotFound
 	}
 
-	service := ddbService.ToRegistryService()
-	service.Nodes = func(ns []DDBNode) []*registry.Node {
-		var nodes []*registry.Node
-		for _, n := range ns {
-			nodes = append(nodes, n.ToRegistryValue())
+	var services []*registry.Service
+	for _, item := range getServiceQuery.Items {
+		var ddbService DDBService
+		if err := dynamodbattribute.UnmarshalMap(item, &ddbService); err != nil {
+			return nil, errors.Wrap(err, "DynamoDB registry GetService DynamoDB unmarshal error of service")
 		}
-		return nodes
-	}(ddbNodes)
 
-	return []*registry.Service{service}, nil
+		getNodeQuery, getNodeQueryErr := r.dynamodbClient.Query(&dynamodb.QueryInput{
+			TableName:      aws.String(r.getTableName()),
+			ConsistentRead: aws.Bool(true),
+			KeyConditions: map[string]*dynamodb.Condition{
+				keyType: {
+					AttributeValueList: []*dynamodb.AttributeValue{
+						{
+							S: aws.String(typeNode),
+						},
+					},
+					ComparisonOperator: aws.String("EQ"),
+				},
+				keyName: {
+					AttributeValueList: []*dynamodb.AttributeValue{
+						{
+							S: aws.String(fmt.Sprintf("%s%s%s", serviceName, delimiter, ddbService.Version)),
+						},
+					},
+					ComparisonOperator: aws.String("BEGINS_WITH"),
+				},
+			},
+		})
+
+		if getNodeQueryErr != nil {
+			return nil, errors.Wrap(getNodeQueryErr, "DynamoDB registry GetService query nodes error")
+		}
+
+		var ddbNodes []DDBNode
+		for _, item := range getNodeQuery.Items {
+			var node DDBNode
+			if err := dynamodbattribute.UnmarshalMap(item, &node); err != nil {
+				return nil, errors.Wrap(err, "DynamoDB registry GetService DynamoDB unmarshal node error")
+			}
+			ddbNodes = append(ddbNodes, node)
+		}
+
+		service := ddbService.ToRegistryService()
+		service.Nodes = func(ns []DDBNode) []*registry.Node {
+			var nodes []*registry.Node
+			for _, n := range ns {
+				nodes = append(nodes, n.ToRegistryValue())
+			}
+			return nodes
+		}(ddbNodes)
+
+		services = append(services, service)
+	}
+
+	return services, nil
 }
 
 func (r dynamoDBRegistry) ListServices() ([]*registry.Service, error) {
@@ -263,6 +284,21 @@ func NewRegistry(opts ...registry.Option) registry.Registry {
 
 	return dynamoDBRegistry{
 		newClient(),
+		options,
+	}
+}
+
+func NewRegistryWithDynamoDBClient(client dynamodbiface.DynamoDBAPI, opts ...registry.Option) registry.Registry {
+	options := registry.Options{
+		Context: context.Background(),
+	}
+
+	for _, o := range opts {
+		o(&options)
+	}
+
+	return dynamoDBRegistry{
+		client,
 		options,
 	}
 }
