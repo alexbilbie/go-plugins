@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/micro/go-bson"
+	"github.com/asim/go-bson"
 	"github.com/micro/go-micro/codec"
 )
 

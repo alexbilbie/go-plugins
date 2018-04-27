@@ -2,6 +2,7 @@
 package grpc
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -22,8 +23,9 @@ import (
 	meta "github.com/micro/go-micro/metadata"
 	"github.com/micro/go-micro/registry"
 	"github.com/micro/go-micro/server"
+	"github.com/micro/util/go/lib/addr"
+	mgrpc "github.com/micro/util/go/lib/grpc"
 
-	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -47,9 +49,7 @@ type grpcServer struct {
 	handlers    map[string]server.Handler
 	subscribers map[*subscriber][]broker.Subscriber
 	// used for first registration
-	registered     bool
-	securityOption grpc.DialOption
-	credentials    credentials.TransportCredentials
+	registered bool
 }
 
 func init() {
@@ -67,19 +67,26 @@ func newGRPCServer(opts ...server.Option) server.Server {
 		handlers:    make(map[string]server.Handler),
 		subscribers: make(map[*subscriber][]broker.Subscriber),
 		exit:        make(chan chan error),
-		credentials: getCredentiaksOption(options),
 	}
 }
 
-func getCredentiaksOption(opts server.Options) credentials.TransportCredentials {
-
-	if opts.Context != nil {
-		if v := opts.Context.Value(tlsAuth{}); v != nil {
+func (g *grpcServer) getCredentials() credentials.TransportCredentials {
+	if g.opts.Context != nil {
+		if v := g.opts.Context.Value(tlsAuth{}); v != nil {
 			tls := v.(*tls.Config)
 			return credentials.NewTLS(tls)
 		}
 	}
 	return nil
+}
+
+func (g *grpcServer) getHttp2TransportConfig() transport.ServerConfig {
+	if g.opts.Context != nil {
+		if v := g.opts.Context.Value(transportConfig{}); v != nil {
+			return *v.(*transport.ServerConfig)
+		}
+	}
+	return transport.ServerConfig{}
 }
 
 func (g *grpcServer) serve(l net.Listener) error {
@@ -115,14 +122,13 @@ func (g *grpcServer) serve(l net.Listener) error {
 }
 
 func (g *grpcServer) useTransportAuthenticator(rawConn net.Conn) (net.Conn, credentials.AuthInfo, error) {
-	if g.credentials == nil {
-		return rawConn, nil, nil
+	if creds := g.getCredentials(); creds != nil {
+		return creds.ServerHandshake(rawConn)
 	}
-	return g.credentials.ServerHandshake(rawConn)
+	return rawConn, nil, nil
 }
 
 func (g *grpcServer) accept(rawConn net.Conn) {
-
 	conn, authInfo, err := g.useTransportAuthenticator(rawConn)
 
 	if err != nil {
@@ -130,7 +136,10 @@ func (g *grpcServer) accept(rawConn net.Conn) {
 		return
 	}
 
-	st, err := transport.NewServerTransport("http2", conn, &transport.ServerConfig{AuthInfo: authInfo})
+	serverConfig := g.getHttp2TransportConfig()
+	serverConfig.AuthInfo = authInfo
+
+	st, err := transport.NewServerTransport("http2", conn, &serverConfig)
 	if err != nil {
 		conn.Close()
 		return
@@ -160,44 +169,17 @@ func (g *grpcServer) accept(rawConn net.Conn) {
 }
 
 func (g *grpcServer) serveStream(t transport.ServerTransport, stream *transport.Stream) {
-	// Ensure Foo.Bar, /helloworld.Foo/Bar or /greeter.hello.world.Foo/Bar
-	// Internally we only know of Foo.Bar
-	serviceMethod := strings.Split(stream.Method(), ".")
-
-	// Ensure at least 2 parts and not blank
-	if len(serviceMethod) < 2 || len(serviceMethod[0]) == 0 || len(serviceMethod[1]) == 0 {
-		err := t.WriteStatus(stream, status.New(codes.InvalidArgument, fmt.Sprintf("malformed method name: %q", stream.Method())))
-		if err != nil {
-			log.Logf("grpc: Server.serveStream failed to write status: %v", err)
-		}
-		return
-	}
-
-	// is grpc method? /greeter.hello.world.Foo/Bar or /helloworld.Foo/Bar
-	if serviceMethod[0][0] == '/' {
-		// operate on Foo/Bar
-		parts := strings.Split(serviceMethod[len(serviceMethod)-1], "/")
-		if len(parts) != 2 {
-			err := t.WriteStatus(stream, status.New(codes.InvalidArgument, fmt.Sprintf("malformed method name: %q", stream.Method())))
-			if err != nil {
-				log.Logf("grpc: Server.serveStream failed to write status: %v", err)
-			}
-			return
-		}
-		// replace method
-		serviceMethod[0] = parts[0]
-		serviceMethod[1] = parts[1]
-		// not a grpc method, so we expect 2 parts
-	} else if len(serviceMethod) != 2 {
-		err := t.WriteStatus(stream, status.New(codes.InvalidArgument, fmt.Sprintf("malformed method name: %q", stream.Method())))
-		if err != nil {
-			log.Logf("grpc: Server.serveStream failed to write status: %v", err)
+	// get Go method from stream method
+	serviceName, methodName, err := mgrpc.ServiceMethod(stream.Method())
+	if err != nil {
+		if gerr := t.WriteStatus(stream, status.New(codes.InvalidArgument, err.Error())); err != nil {
+			log.Logf("grpc: Server.serveStream failed to write status: %v", gerr)
 		}
 		return
 	}
 
 	g.rpc.mu.Lock()
-	service := g.rpc.serviceMap[serviceMethod[0]]
+	service := g.rpc.serviceMap[serviceName]
 	g.rpc.mu.Unlock()
 	if service == nil {
 		if err := t.WriteStatus(stream, status.New(codes.Unimplemented, fmt.Sprintf("unknown service %v", service))); err != nil {
@@ -206,7 +188,7 @@ func (g *grpcServer) serveStream(t transport.ServerTransport, stream *transport.
 		return
 	}
 
-	mtype := service.method[serviceMethod[1]]
+	mtype := service.method[methodName]
 	if mtype == nil {
 		if err := t.WriteStatus(stream, status.New(codes.Unimplemented, fmt.Sprintf("unknown service %v", service))); err != nil {
 			log.Logf("grpc: Server.serveStream failed to write status: %v", err)
@@ -584,7 +566,7 @@ func (g *grpcServer) Register() error {
 		host = parts[0]
 	}
 
-	addr, err := extractAddress(host)
+	addr, err := addr.Extract(host)
 	if err != nil {
 		return err
 	}
@@ -704,7 +686,7 @@ func (g *grpcServer) Deregister() error {
 		host = parts[0]
 	}
 
-	addr, err := extractAddress(host)
+	addr, err := addr.Extract(host)
 	if err != nil {
 		return err
 	}

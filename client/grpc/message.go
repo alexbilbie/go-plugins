@@ -7,12 +7,12 @@ import (
 type grpcPublication struct {
 	topic       string
 	contentType string
-	message     interface{}
+	payload     interface{}
 }
 
-func newGRPCPublication(topic string, message interface{}, contentType string) client.Publication {
+func newGRPCPublication(topic string, payload interface{}, contentType string) client.Message {
 	return &grpcPublication{
-		message:     message,
+		payload:     payload,
 		topic:       topic,
 		contentType: contentType,
 	}
@@ -26,6 +26,6 @@ func (g *grpcPublication) Topic() string {
 	return g.topic
 }
 
-func (g *grpcPublication) Message() interface{} {
-	return g.message
+func (g *grpcPublication) Payload() interface{} {
+	return g.payload
 }

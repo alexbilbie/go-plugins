@@ -2,12 +2,11 @@
 package nats
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/net/context"
 
 	"github.com/micro/go-micro/cmd"
 	"github.com/micro/go-micro/registry"
@@ -259,6 +258,10 @@ loop:
 	return services, nil
 }
 
+func (n *natsRegistry) Options() registry.Options {
+	return n.opts
+}
+
 func (n *natsRegistry) Register(s *registry.Service, opts ...registry.RegisterOption) error {
 	if err := n.register(s); err != nil {
 		return err
@@ -322,7 +325,7 @@ func (n *natsRegistry) ListServices() ([]*registry.Service, error) {
 	return services, nil
 }
 
-func (n *natsRegistry) Watch() (registry.Watcher, error) {
+func (n *natsRegistry) Watch(opts ...registry.WatchOption) (registry.Watcher, error) {
 	conn, err := n.getConn()
 	if err != nil {
 		return nil, err
@@ -333,7 +336,12 @@ func (n *natsRegistry) Watch() (registry.Watcher, error) {
 		return nil, err
 	}
 
-	return &natsWatcher{sub}, nil
+	var wo registry.WatchOptions
+	for _, o := range opts {
+		o(&wo)
+	}
+
+	return &natsWatcher{sub, wo}, nil
 }
 
 func (n *natsRegistry) String() string {

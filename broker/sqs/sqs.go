@@ -1,19 +1,18 @@
 package sqs
 
 import (
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/sqs"
-
+	"context"
 	"errors"
 	"fmt"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/sqs"
 	"github.com/micro/go-log"
 	"github.com/micro/go-micro/broker"
 	"github.com/micro/go-micro/cmd"
-	"golang.org/x/net/context"
 )
 
 const (
@@ -24,7 +23,6 @@ const (
 
 // Amazon SQS Broker
 type sqsBroker struct {
-	session *session.Session
 	svc     *sqs.SQS
 	options broker.Options
 }
@@ -184,6 +182,10 @@ func (b *sqsBroker) Address() string {
 }
 
 func (b *sqsBroker) Connect() error {
+	if svc := b.getSQSClient(); svc != nil {
+		b.svc = svc
+		return nil
+	}
 
 	sess := session.Must(session.NewSessionWithOptions(session.Options{
 		SharedConfigState: session.SharedConfigEnable,
@@ -191,7 +193,6 @@ func (b *sqsBroker) Connect() error {
 
 	svc := sqs.New(sess)
 	b.svc = svc
-	b.session = sess
 
 	return nil
 }
@@ -203,7 +204,6 @@ func (b *sqsBroker) Disconnect() error {
 
 // Init initializes a broker and configures an AWS session and SQS struct
 func (b *sqsBroker) Init(opts ...broker.Option) error {
-
 	for _, o := range opts {
 		o(&b.options)
 	}
@@ -302,6 +302,15 @@ func buildMessageHeader(attribs map[string]*sqs.MessageAttributeValue) map[strin
 		res[k] = *v.StringValue
 	}
 	return res
+}
+
+func (b *sqsBroker) getSQSClient() *sqs.SQS {
+	raw := b.options.Context.Value(sqsClientKey{})
+	if raw != nil {
+		s := raw.(*sqs.SQS)
+		return s
+	}
+	return nil
 }
 
 func (b *sqsBroker) generateGroupID(m *broker.Message) *string {

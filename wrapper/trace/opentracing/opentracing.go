@@ -4,11 +4,11 @@ package opentracing
 import (
 	"fmt"
 
+	"context"
 	"github.com/micro/go-micro/client"
 	"github.com/micro/go-micro/metadata"
 	"github.com/micro/go-micro/server"
 	"github.com/opentracing/opentracing-go"
-	"golang.org/x/net/context"
 )
 
 type otWrapper struct {
@@ -46,7 +46,7 @@ func (o *otWrapper) Call(ctx context.Context, req client.Request, rsp interface{
 	return o.Client.Call(ctx, req, rsp, opts...)
 }
 
-func (o *otWrapper) Publish(ctx context.Context, p client.Publication, opts ...client.PublishOption) error {
+func (o *otWrapper) Publish(ctx context.Context, p client.Message, opts ...client.PublishOption) error {
 	name := fmt.Sprintf("Pub to %s", p.Topic())
 	ctx, span, err := traceIntoContext(ctx, o.ot, name)
 	if err != nil {
@@ -81,7 +81,7 @@ func NewHandlerWrapper(ot opentracing.Tracer) server.HandlerWrapper {
 // NewSubscriberWrapper accepts an opentracing Tracer and returns a Subscriber Wrapper
 func NewSubscriberWrapper(ot opentracing.Tracer) server.SubscriberWrapper {
 	return func(next server.SubscriberFunc) server.SubscriberFunc {
-		return func(ctx context.Context, msg server.Publication) error {
+		return func(ctx context.Context, msg server.Message) error {
 			name := "Pub to " + msg.Topic()
 			ctx, span, err := traceIntoContext(ctx, ot, name)
 			if err != nil {

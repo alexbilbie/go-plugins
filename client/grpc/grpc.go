@@ -3,6 +3,7 @@ package grpc
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	errs "errors"
 	"fmt"
@@ -22,15 +23,12 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	gmetadata "google.golang.org/grpc/metadata"
-
-	"golang.org/x/net/context"
 )
 
 type grpcClient struct {
-	once           sync.Once
-	opts           client.Options
-	pool           *pool
-	securityOption grpc.DialOption
+	once sync.Once
+	opts client.Options
+	pool *pool
 }
 
 var (
@@ -39,6 +37,39 @@ var (
 
 func init() {
 	cmd.DefaultClients["grpc"] = NewClient
+}
+
+// secure returns the dial option for whether its a secure or insecure connection
+func (g *grpcClient) secure() grpc.DialOption {
+	if g.opts.Context != nil {
+		if v := g.opts.Context.Value(tlsAuth{}); v != nil {
+			tls := v.(*tls.Config)
+			creds := credentials.NewTLS(tls)
+			return grpc.WithTransportCredentials(creds)
+		}
+	}
+	return grpc.WithInsecure()
+}
+
+func (g *grpcClient) next(request client.Request, opts client.CallOptions) (selector.Next, error) {
+	// return remote address
+	if len(opts.Address) > 0 {
+		return func() (*registry.Node, error) {
+			return &registry.Node{
+				Address: opts.Address,
+			}, nil
+		}, nil
+	}
+
+	// get next nodes from the selector
+	next, err := g.opts.Selector.Select(request.Service(), opts.SelectOptions...)
+	if err != nil && err == selector.ErrNotFound {
+		return nil, errors.NotFound("go.micro.client", err.Error())
+	} else if err != nil {
+		return nil, errors.InternalServerError("go.micro.client", err.Error())
+	}
+
+	return next, nil
 }
 
 func (g *grpcClient) call(ctx context.Context, address string, req client.Request, rsp interface{}, opts client.CallOptions) error {
@@ -64,7 +95,7 @@ func (g *grpcClient) call(ctx context.Context, address string, req client.Reques
 
 	var grr error
 
-	cc, err := g.pool.getConn(address, grpc.WithCodec(cf), grpc.WithTimeout(opts.DialTimeout), g.securityOption)
+	cc, err := g.pool.getConn(address, grpc.WithCodec(cf), grpc.WithTimeout(opts.DialTimeout), g.secure())
 	if err != nil {
 		return errors.InternalServerError("go.micro.client", fmt.Sprintf("Error sending request: %v", err))
 	}
@@ -90,7 +121,7 @@ func (g *grpcClient) call(ctx context.Context, address string, req client.Reques
 	return grr
 }
 
-func (g *grpcClient) stream(ctx context.Context, address string, req client.Request, opts client.CallOptions) (client.Streamer, error) {
+func (g *grpcClient) stream(ctx context.Context, address string, req client.Request, opts client.CallOptions) (client.Stream, error) {
 	header := make(map[string]string)
 	if md, ok := metadata.FromContext(ctx); ok {
 		for k, v := range md {
@@ -111,7 +142,7 @@ func (g *grpcClient) stream(ctx context.Context, address string, req client.Requ
 		return nil, errors.InternalServerError("go.micro.client", err.Error())
 	}
 
-	cc, err := grpc.Dial(address, grpc.WithCodec(cf), grpc.WithTimeout(opts.DialTimeout), g.securityOption)
+	cc, err := grpc.Dial(address, grpc.WithCodec(cf), grpc.WithTimeout(opts.DialTimeout), g.secure())
 	if err != nil {
 		return nil, errors.InternalServerError("go.micro.client", fmt.Sprintf("Error sending request: %v", err))
 	}
@@ -173,20 +204,12 @@ func (g *grpcClient) Options() client.Options {
 	return g.opts
 }
 
-func (g *grpcClient) NewPublication(topic string, msg interface{}) client.Publication {
+func (g *grpcClient) NewMessage(topic string, msg interface{}) client.Message {
 	return newGRPCPublication(topic, msg, "application/octet-stream")
 }
 
 func (g *grpcClient) NewRequest(service, method string, req interface{}, reqOpts ...client.RequestOption) client.Request {
 	return newGRPCRequest(service, method, req, g.opts.ContentType, reqOpts...)
-}
-
-func (g *grpcClient) NewProtoRequest(service, method string, req interface{}, reqOpts ...client.RequestOption) client.Request {
-	return newGRPCRequest(service, method, req, "application/grpc+proto", reqOpts...)
-}
-
-func (g *grpcClient) NewJsonRequest(service, method string, req interface{}, reqOpts ...client.RequestOption) client.Request {
-	return newGRPCRequest(service, method, req, "application/grpc+json", reqOpts...)
 }
 
 func (g *grpcClient) Call(ctx context.Context, req client.Request, rsp interface{}, opts ...client.CallOption) error {
@@ -196,12 +219,9 @@ func (g *grpcClient) Call(ctx context.Context, req client.Request, rsp interface
 		opt(&callOpts)
 	}
 
-	// get next nodes from the selector
-	next, err := g.opts.Selector.Select(req.Service(), callOpts.SelectOptions...)
-	if err != nil && err == selector.ErrNotFound {
-		return errors.NotFound("go.micro.client", err.Error())
-	} else if err != nil {
-		return errors.InternalServerError("go.micro.client", err.Error())
+	next, err := g.next(req, callOpts)
+	if err != nil {
+		return err
 	}
 
 	// check if we already have a deadline
@@ -297,27 +317,16 @@ func (g *grpcClient) Call(ctx context.Context, req client.Request, rsp interface
 	return gerr
 }
 
-func (g *grpcClient) CallRemote(ctx context.Context, addr string, req client.Request, rsp interface{}, opts ...client.CallOption) error {
-	callOpts := g.opts.CallOptions
-	for _, opt := range opts {
-		opt(&callOpts)
-	}
-	return g.call(ctx, addr, req, rsp, callOpts)
-}
-
-func (g *grpcClient) Stream(ctx context.Context, req client.Request, opts ...client.CallOption) (client.Streamer, error) {
+func (g *grpcClient) Stream(ctx context.Context, req client.Request, opts ...client.CallOption) (client.Stream, error) {
 	// make a copy of call opts
 	callOpts := g.opts.CallOptions
 	for _, opt := range opts {
 		opt(&callOpts)
 	}
 
-	// get next nodes from the selector
-	next, err := g.opts.Selector.Select(req.Service(), callOpts.SelectOptions...)
-	if err != nil && err == selector.ErrNotFound {
-		return nil, errors.NotFound("go.micro.client", err.Error())
-	} else if err != nil {
-		return nil, errors.InternalServerError("go.micro.client", err.Error())
+	next, err := g.next(req, callOpts)
+	if err != nil {
+		return nil, err
 	}
 
 	// check if we already have a deadline
@@ -339,7 +348,7 @@ func (g *grpcClient) Stream(ctx context.Context, req client.Request, opts ...cli
 	default:
 	}
 
-	call := func(i int) (client.Streamer, error) {
+	call := func(i int) (client.Stream, error) {
 		// call backoff first. Someone may want an initial start delay
 		t, err := callOpts.Backoff(ctx, req, i)
 		if err != nil {
@@ -369,7 +378,7 @@ func (g *grpcClient) Stream(ctx context.Context, req client.Request, opts ...cli
 	}
 
 	type response struct {
-		stream client.Streamer
+		stream client.Stream
 		err    error
 	}
 
@@ -407,15 +416,7 @@ func (g *grpcClient) Stream(ctx context.Context, req client.Request, opts ...cli
 	return nil, grr
 }
 
-func (g *grpcClient) StreamRemote(ctx context.Context, addr string, req client.Request, opts ...client.CallOption) (client.Streamer, error) {
-	callOpts := g.opts.CallOptions
-	for _, opt := range opts {
-		opt(&callOpts)
-	}
-	return g.stream(ctx, addr, req, callOpts)
-}
-
-func (g *grpcClient) Publish(ctx context.Context, p client.Publication, opts ...client.PublishOption) error {
+func (g *grpcClient) Publish(ctx context.Context, p client.Message, opts ...client.PublishOption) error {
 	md, ok := metadata.FromContext(ctx)
 	if !ok {
 		md = make(map[string]string)
@@ -428,7 +429,7 @@ func (g *grpcClient) Publish(ctx context.Context, p client.Publication, opts ...
 	}
 
 	b := &buffer{bytes.NewBuffer(nil)}
-	if err := cf(b).Write(&codec.Message{Type: codec.Publication}, p.Message()); err != nil {
+	if err := cf(b).Write(&codec.Message{Type: codec.Publication}, p.Payload()); err != nil {
 		return errors.InternalServerError("go.micro.client", err.Error())
 	}
 
@@ -486,8 +487,6 @@ func newClient(opts ...client.Option) client.Client {
 		pool: newPool(options.PoolSize, options.PoolTTL),
 	}
 
-	rc.setSecurityOption()
-
 	c := client.Client(rc)
 
 	// wrap in reverse
@@ -496,19 +495,6 @@ func newClient(opts ...client.Option) client.Client {
 	}
 
 	return c
-}
-
-func (g *grpcClient) setSecurityOption() {
-
-	if g.opts.Context != nil {
-		if v := g.opts.Context.Value(tlsAuth{}); v != nil {
-			tls := v.(*tls.Config)
-			creds := credentials.NewTLS(tls)
-			g.securityOption = grpc.WithTransportCredentials(creds)
-			return
-		}
-	}
-	g.securityOption = grpc.WithInsecure()
 }
 
 func NewClient(opts ...client.Option) client.Client {

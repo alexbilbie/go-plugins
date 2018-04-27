@@ -2,6 +2,7 @@
 package etcdv3
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -9,8 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/net/context"
 
 	"github.com/coreos/etcd/clientv3"
 	"github.com/micro/go-micro/cmd"
@@ -55,6 +54,10 @@ func nodePath(s, id string) string {
 
 func servicePath(s string) string {
 	return path.Join(prefix, strings.Replace(s, "/", "-", -1))
+}
+
+func (e *etcdv3Registry) Options() registry.Options {
+	return e.options
 }
 
 func (e *etcdv3Registry) Deregister(s *registry.Service) error {
@@ -234,8 +237,8 @@ func (e *etcdv3Registry) ListServices() ([]*registry.Service, error) {
 	return services, nil
 }
 
-func (e *etcdv3Registry) Watch() (registry.Watcher, error) {
-	return newEtcdv3Watcher(e, e.options.Timeout)
+func (e *etcdv3Registry) Watch(opts ...registry.WatchOption) (registry.Watcher, error) {
+	return newEtcdv3Watcher(e, e.options.Timeout, opts...)
 }
 
 func (e *etcdv3Registry) String() string {
