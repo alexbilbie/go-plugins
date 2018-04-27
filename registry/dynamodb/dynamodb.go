@@ -43,7 +43,8 @@ func (r dynamoDBRegistry) Register(service *registry.Service, opts ...registry.R
 		o(&options)
 	}
 
-	var expiry = int64(options.TTL) + time.Now().Unix()
+	var expiry = int64(options.TTL/time.Second) + time.Now().Unix()
+
 	var items []map[string]*dynamodb.AttributeValue
 
 	s := NewDDBService(service)
