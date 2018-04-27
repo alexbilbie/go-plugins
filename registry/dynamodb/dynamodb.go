@@ -261,6 +261,10 @@ func (r dynamoDBRegistry) Watch(...registry.WatchOption) (registry.Watcher, erro
 	return nil, errors.New("DynamoDB registry has now Watcher implementation")
 }
 
+func (r dynamoDBRegistry) Options() registry.Options {
+	return r.options
+}
+
 func (r dynamoDBRegistry) String() string {
 	return registryName
 }
