@@ -257,7 +257,7 @@ func (r dynamoDBRegistry) ListServices() ([]*registry.Service, error) {
 	return services, nil
 }
 
-func (r dynamoDBRegistry) Watch() (registry.Watcher, error) {
+func (r dynamoDBRegistry) Watch(...registry.WatchOption) (registry.Watcher, error) {
 	return nil, errors.New("DynamoDB registry has now Watcher implementation")
 }
 
