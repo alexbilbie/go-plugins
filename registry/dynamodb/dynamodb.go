@@ -2,8 +2,8 @@ package dynamodb
 
 import (
 	"context"
-	"time"
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -49,7 +49,7 @@ func (r dynamoDBRegistry) Register(service *registry.Service, opts ...registry.R
 
 	s := NewDDBService(service)
 	if options.TTL > time.Duration(0) {
-		s.TTL = expiry
+		s.Expiry = expiry
 	}
 	av, _ := dynamodbattribute.MarshalMap(s)
 	items = append(items, av)
@@ -57,7 +57,7 @@ func (r dynamoDBRegistry) Register(service *registry.Service, opts ...registry.R
 	for _, node := range service.Nodes {
 		n := NewDDBNode(node)
 		if options.TTL > time.Duration(0) {
-			n.TTL = expiry
+			n.Expiry = expiry
 		}
 		av, _ := dynamodbattribute.MarshalMap(n)
 		items = append(items, av)
@@ -133,8 +133,14 @@ func (r dynamoDBRegistry) Deregister(service *registry.Service) error {
 
 func (r dynamoDBRegistry) GetService(serviceName string) ([]*registry.Service, error) {
 	getServiceQuery, getServiceQueryErr := r.dynamodbClient.Query(&dynamodb.QueryInput{
-		TableName:      aws.String(r.getTableName()),
-		ConsistentRead: aws.Bool(true),
+		TableName:        aws.String(r.getTableName()),
+		ConsistentRead:   aws.Bool(true),
+		FilterExpression: aws.String("Expiry > :now"),
+		ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
+			":now": {
+				N: aws.String(fmt.Sprintf("%d", time.Now().Unix())),
+			},
+		},
 		KeyConditions: map[string]*dynamodb.Condition{
 			keyType: {
 				AttributeValueList: []*dynamodb.AttributeValue{
@@ -171,8 +177,14 @@ func (r dynamoDBRegistry) GetService(serviceName string) ([]*registry.Service, e
 		}
 
 		getNodeQuery, getNodeQueryErr := r.dynamodbClient.Query(&dynamodb.QueryInput{
-			TableName:      aws.String(r.getTableName()),
-			ConsistentRead: aws.Bool(true),
+			TableName:        aws.String(r.getTableName()),
+			ConsistentRead:   aws.Bool(true),
+			FilterExpression: aws.String("Expiry > :now"),
+			ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
+				":now": {
+					N: aws.String(fmt.Sprintf("%d", time.Now().Unix())),
+				},
+			},
 			KeyConditions: map[string]*dynamodb.Condition{
 				keyType: {
 					AttributeValueList: []*dynamodb.AttributeValue{
@@ -224,8 +236,14 @@ func (r dynamoDBRegistry) GetService(serviceName string) ([]*registry.Service, e
 func (r dynamoDBRegistry) ListServices() ([]*registry.Service, error) {
 
 	queryResult, err := r.dynamodbClient.Query(&dynamodb.QueryInput{
-		TableName:      aws.String(r.getTableName()),
-		ConsistentRead: aws.Bool(true),
+		TableName:        aws.String(r.getTableName()),
+		ConsistentRead:   aws.Bool(true),
+		FilterExpression: aws.String("TTL > :now"),
+		ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
+			":now": {
+				N: aws.String(fmt.Sprintf("%d", time.Now().Unix())),
+			},
+		},
 		KeyConditions: map[string]*dynamodb.Condition{
 			keyType: {
 				AttributeValueList: []*dynamodb.AttributeValue{

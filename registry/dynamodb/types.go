@@ -1,6 +1,8 @@
 package dynamodb
 
-import "github.com/micro/go-micro/registry"
+import (
+	"github.com/micro/go-micro/registry"
+)
 
 type DDBService struct {
 	Type      string
@@ -8,7 +10,7 @@ type DDBService struct {
 	Version   string
 	Metadata  map[string]string
 	Endpoints []DDBEndpoint
-	TTL       int64
+	Expiry    int64
 }
 
 func NewDDBService(service *registry.Service) DDBService {
@@ -77,7 +79,7 @@ type DDBNode struct {
 	Address        string
 	Port           int
 	Metadata       map[string]string
-	TTL            int64
+	Expiry         int64
 }
 
 func NewDDBNode(node *registry.Node) DDBNode {
